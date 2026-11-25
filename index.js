@@ -1,27 +1,38 @@
 
 const {
     default: makeWASocket,
-    DisconnectReason,
     useMultiFileAuthState,
+    DisconnectReason,
     downloadContentFromMessage
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
 const fs = require("fs");
 const path = require("path");
+const readline = require("readline");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 
 const exec = promisify(execFile);
 
 const BOT_NAME = "ZORA BOT";
-const PHONE_NUMBER = "628xxxxxxxxxx"; // GANTI NOMOR BOT
 const PREFIX = ".";
-const SESSION_DIR = "./session";
-const TEMP_DIR = "./temp";
+const SESSION = "./session";
+const TEMP = "./temp";
 
-if (!fs.existsSync(TEMP_DIR)) {
-    fs.mkdirSync(TEMP_DIR, { recursive: true });
+if (!fs.existsSync(TEMP)) {
+    fs.mkdirSync(TEMP, { recursive: true });
+}
+
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+
+function ask(question) {
+    return new Promise(resolve => {
+        rl.question(question, answer => resolve(answer.trim()));
+    });
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -68,107 +79,105 @@ function getMedia(message) {
 }
 
 function getQuotedMedia(message) {
-    const context =
-        message.message?.extendedTextMessage?.contextInfo;
+    const context = message.message?.extendedTextMessage?.contextInfo;
 
     return context?.quotedMessage
         ? getMedia(context.quotedMessage)
         : null;
 }
 
-async function runFFmpeg(input, output, args) {
+async function ffmpeg(input, output, args = []) {
     await exec("ffmpeg", [
-        "-y",
-        "-i", input,
-        ...args,
-        output
+        "-y", "-i", input, ...args, output
     ]);
 }
 
-async function sendText(sock, jid, text, quoted) {
+async function reply(sock, jid, text, quoted) {
     return sock.sendMessage(jid, { text }, { quoted });
 }
 
 async function startBot() {
     const { state, saveCreds } =
-        await useMultiFileAuthState(SESSION_DIR);
+        await useMultiFileAuthState(SESSION);
 
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: ["ZORA BOT", "Chrome", "1.0.0"],
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000
+        printQRInTerminal: false,
+        browser: ["ZORA BOT", "Chrome", "1.0.0"]
     });
 
     sock.ev.on("creds.update", saveCreds);
 
-    let pairingRequested = false;
+    let pairingStarted = false;
 
     sock.ev.on("connection.update", async update => {
         const { connection, lastDisconnect } = update;
 
         if (connection === "connecting") {
-            console.log("[ZORA BOT] Menghubungkan ke WhatsApp...");
+            console.log("[ZORA BOT] Menghubungkan...");
         }
 
         if (connection === "open") {
-            console.log("[ZORA BOT] BERHASIL TERHUBUNG!");
+            console.log("[ZORA BOT] BERHASIL LOGIN!");
+            console.log("[ZORA BOT] Bot aktif.");
         }
 
-        if (
-            connection === "close" &&
-            lastDisconnect?.error?.output?.statusCode !==
-            DisconnectReason.loggedOut
-        ) {
-            console.log("[ZORA BOT] Koneksi terputus. Mencoba ulang...");
-            await sleep(3000);
-            startBot();
-        }
+        if (connection === "close") {
+            const status =
+                lastDisconnect?.error?.output?.statusCode;
 
-        if (
-            connection === "close" &&
-            lastDisconnect?.error?.output?.statusCode ===
-            DisconnectReason.loggedOut
-        ) {
-            console.log("[ZORA BOT] Sesi logout. Pairing ulang diperlukan.");
+            console.log("[ZORA BOT] Koneksi terputus:", status);
+
+            if (status !== DisconnectReason.loggedOut) {
+                console.log("[ZORA BOT] Mencoba koneksi ulang...");
+                await sleep(3000);
+                startBot();
+            } else {
+                console.log("[ZORA BOT] Sesi logout. Pairing ulang diperlukan.");
+            }
         }
     });
 
-    // PAIRING CODE
-    if (!state.creds.registered && !pairingRequested) {
-        pairingRequested = true;
-
-        if (!/^[0-9]{10,15}$/.test(PHONE_NUMBER)) {
-            console.log("\n[ERROR] Nomor belum benar!");
-            console.log('Ubah PHONE_NUMBER menjadi contoh "6281234567890"');
-            return;
-        }
+    // PAIRING NOMOR TELEPON
+    if (!state.creds.registered && !pairingStarted) {
+        pairingStarted = true;
 
         console.log("\n================================");
         console.log("          ZORA BOT");
         console.log("================================");
-        console.log("Meminta pairing code...");
-        console.log("Nomor:", PHONE_NUMBER);
+
+        let phone = await ask("Masukkan nomor WhatsApp (628xxx): ");
+
+        phone = phone.replace(/[^0-9]/g, "");
+
+        if (!/^[0-9]{10,15}$/.test(phone)) {
+            console.log("Nomor tidak valid. Gunakan format 628xxx.");
+            rl.close();
+            return;
+        }
 
         try {
+            console.log("\nMeminta kode pairing...");
+
             await sleep(3000);
 
-            const code = await sock.requestPairingCode(
-                PHONE_NUMBER
-            );
+            const code = await sock.requestPairingCode(phone);
 
             console.log("\n================================");
             console.log("       ZORA BOT PAIRING");
             console.log("================================");
-            console.log("PAIRING CODE:", code);
-            console.log("================================\n");
-            console.log("Buka WhatsApp > Perangkat tertaut");
-            console.log("Pilih Tautkan dengan nomor telepon.");
+            console.log("NOMOR:", phone);
+            console.log("KODE:", code);
+            console.log("================================");
+            console.log("Masukkan kode melalui WhatsApp");
+            console.log("Perangkat tertaut > Tautkan dengan nomor telepon\n");
+
         } catch (error) {
-            console.error("\n[PAIRING ERROR]", error.message);
+            console.log("PAIRING ERROR:", error.message);
         }
+
+        rl.close();
     }
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
@@ -197,13 +206,10 @@ async function startBot() {
                     getMedia(msg.message) ||
                     getQuotedMedia(msg);
 
-                const reply = text =>
-                    sendText(sock, jid, text, msg);
-
                 switch (command) {
                     case "menu":
                     case "help":
-                        await reply(
+                        await reply(sock, jid,
 `╭━━━〔 ZORA BOT 〕━━━
 ┃
 ┃ GENERAL
@@ -221,47 +227,40 @@ async function startBot() {
 ┃ .slow
 ┃ .fast
 ┃
-╰━━━━━━━━━━━━━━━━━━`
-                        );
+╰━━━━━━━━━━━━━━━━━━`, msg);
                         break;
 
                     case "ping":
-                        await reply("Pong! ZORA BOT aktif.");
+                        await reply(sock, jid, "Pong! ZORA BOT aktif.", msg);
                         break;
 
                     case "info":
-                        await reply(
+                        await reply(sock, jid,
 `BOT: ZORA BOT
 VERSION: 1.0.0
 PLATFORM: WhatsApp
-STATUS: ONLINE`
-                        );
+STATUS: ONLINE`, msg);
                         break;
 
                     case "sticker":
                     case "s": {
-                        if (!media ||
-                            !["image", "video"].includes(media.type)) {
-                            await reply("Kirim atau balas gambar/video dengan .sticker");
+                        if (!media || !["image", "video"].includes(media.type)) {
+                            await reply(sock, jid, "Kirim atau balas gambar/video dengan .sticker", msg);
                             break;
                         }
 
                         const id = Date.now();
-                        const input = path.join(TEMP_DIR, `${id}_input`);
-                        const output = path.join(TEMP_DIR, `${id}.webp`);
+                        const input = path.join(TEMP, `${id}_input`);
+                        const output = path.join(TEMP, `${id}.webp`);
 
-                        fs.writeFileSync(
-                            input,
-                            await downloadMedia(media.message, media.type)
-                        );
+                        fs.writeFileSync(input,
+                            await downloadMedia(media.message, media.type));
 
                         const filters =
                             "fps=15,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:-1:-1:color=white";
 
-                        await runFFmpeg(input, output, [
-                            ...(media.type === "video"
-                                ? ["-t", "8"]
-                                : []),
+                        await ffmpeg(input, output, [
+                            ...(media.type === "video" ? ["-t", "8"] : []),
                             "-vf", filters,
                             "-vcodec", "libwebp",
                             "-loop", "0"
@@ -278,20 +277,18 @@ STATUS: ONLINE`
 
                     case "toimg": {
                         if (!media || media.type !== "sticker") {
-                            await reply("Balas sticker dengan .toimg");
+                            await reply(sock, jid, "Balas sticker dengan .toimg", msg);
                             break;
                         }
 
                         const id = Date.now();
-                        const input = path.join(TEMP_DIR, `${id}.webp`);
-                        const output = path.join(TEMP_DIR, `${id}.png`);
+                        const input = path.join(TEMP, `${id}.webp`);
+                        const output = path.join(TEMP, `${id}.png`);
 
-                        fs.writeFileSync(
-                            input,
-                            await downloadMedia(media.message, "sticker")
-                        );
+                        fs.writeFileSync(input,
+                            await downloadMedia(media.message, "sticker"));
 
-                        await runFFmpeg(input, output, []);
+                        await ffmpeg(input, output);
 
                         await sock.sendMessage(jid, {
                             image: fs.readFileSync(output),
@@ -308,18 +305,16 @@ STATUS: ONLINE`
                     case "slow":
                     case "fast": {
                         if (!media || media.type !== "audio") {
-                            await reply("Balas pesan audio dengan ." + command);
+                            await reply(sock, jid, "Balas audio dengan ." + command, msg);
                             break;
                         }
 
                         const id = Date.now();
-                        const input = path.join(TEMP_DIR, `${id}_input`);
-                        const output = path.join(TEMP_DIR, `${id}.mp3`);
+                        const input = path.join(TEMP, `${id}_input`);
+                        const output = path.join(TEMP, `${id}.mp3`);
 
-                        fs.writeFileSync(
-                            input,
-                            await downloadMedia(media.message, "audio")
-                        );
+                        fs.writeFileSync(input,
+                            await downloadMedia(media.message, "audio"));
 
                         let filters = [];
 
@@ -327,9 +322,8 @@ STATUS: ONLINE`
                         if (command === "slow") filters = ["-af", "atempo=0.8"];
                         if (command === "fast") filters = ["-af", "atempo=1.25"];
 
-                        await runFFmpeg(input, output, [
-                            "-vn",
-                            ...filters,
+                        await ffmpeg(input, output, [
+                            "-vn", ...filters,
                             "-acodec", "libmp3lame",
                             "-q:a", "2"
                         ]);
@@ -346,24 +340,20 @@ STATUS: ONLINE`
                     }
 
                     case "stcaudio":
-                        await reply(
-                            "Fitur stcaudio belum tersedia di versi ini."
-                        );
+                        await reply(sock, jid,
+                            "Fitur stcaudio belum tersedia.", msg);
                         break;
 
                     default:
-                        await reply(
-                            `Perintah tidak ditemukan: ${PREFIX}${command}\nKetik .menu`
-                        );
+                        await reply(sock, jid,
+                            `Perintah tidak ditemukan. Ketik ${PREFIX}menu`, msg);
                 }
+
             } catch (error) {
                 console.error("[COMMAND ERROR]", error);
-                await sendText(
-                    sock,
-                    msg.key.remoteJid,
-                    "Terjadi kesalahan saat menjalankan perintah.",
-                    msg
-                ).catch(() => {});
+                await reply(sock, msg.key.remoteJid,
+                    "Terjadi kesalahan saat menjalankan perintah.", msg)
+                    .catch(() => {});
             }
         }
     });
@@ -372,5 +362,5 @@ STATUS: ONLINE`
 }
 
 startBot().catch(error => {
-    console.error("[FATAL ERROR]", error);
+    console.error("[FATAL]", error);
 });
