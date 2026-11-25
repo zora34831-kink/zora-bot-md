@@ -9,19 +9,13 @@ const {
 const pino = require("pino");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 
 const exec = promisify(execFile);
 
 const BOT_NAME = "ZORA BOT";
-const PAIRING_CODE = "ZORAXBOT";
-
-// GANTI DENGAN NOMOR WHATSAPP BOT
-// Contoh: 6281234567890
-const PHONE_NUMBER = "628xxxxxxxxxx";
-
+const PHONE_NUMBER = "628xxxxxxxxxx"; // GANTI NOMOR BOT
 const PREFIX = ".";
 const SESSION_DIR = "./session";
 const TEMP_DIR = "./temp";
@@ -30,13 +24,11 @@ if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function downloadMedia(message, type) {
     const stream = await downloadContentFromMessage(message, type);
-    let buffer = Buffer.from([]);
+    let buffer = Buffer.alloc(0);
 
     for await (const chunk of stream) {
         buffer = Buffer.concat([buffer, chunk]);
@@ -45,29 +37,21 @@ async function downloadMedia(message, type) {
     return buffer;
 }
 
-function getMessageContent(message) {
+function getMedia(message) {
     let msg = message;
 
     while (msg) {
-        if (msg.imageMessage) {
+        if (msg.imageMessage)
             return { message: msg.imageMessage, type: "image" };
-        }
 
-        if (msg.videoMessage) {
+        if (msg.videoMessage)
             return { message: msg.videoMessage, type: "video" };
-        }
 
-        if (msg.audioMessage) {
+        if (msg.audioMessage)
             return { message: msg.audioMessage, type: "audio" };
-        }
 
-        if (msg.stickerMessage) {
+        if (msg.stickerMessage)
             return { message: msg.stickerMessage, type: "sticker" };
-        }
-
-        if (msg.documentMessage) {
-            return { message: msg.documentMessage, type: "document" };
-        }
 
         if (msg.ephemeralMessage) {
             msg = msg.ephemeralMessage.message;
@@ -75,8 +59,6 @@ function getMessageContent(message) {
             msg = msg.viewOnceMessage.message;
         } else if (msg.viewOnceMessageV2) {
             msg = msg.viewOnceMessageV2.message;
-        } else if (msg.documentWithCaptionMessage) {
-            msg = msg.documentWithCaptionMessage.message;
         } else {
             break;
         }
@@ -87,25 +69,20 @@ function getMessageContent(message) {
 
 function getQuotedMedia(message) {
     const context =
-        message.message?.extendedTextMessage?.contextInfo ||
-        message.message?.imageMessage?.contextInfo ||
-        message.message?.videoMessage?.contextInfo ||
-        message.message?.audioMessage?.contextInfo;
+        message.message?.extendedTextMessage?.contextInfo;
 
-    if (!context?.quotedMessage) return null;
-
-    return getMessageContent(context.quotedMessage);
+    return context?.quotedMessage
+        ? getMedia(context.quotedMessage)
+        : null;
 }
 
-async function ffmpeg(input, output, args = []) {
+async function runFFmpeg(input, output, args) {
     await exec("ffmpeg", [
         "-y",
         "-i", input,
         ...args,
         output
     ]);
-
-    return output;
 }
 
 async function sendText(sock, jid, text, quoted) {
@@ -120,57 +97,77 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: ["ZORA BOT", "Chrome", "1.0.0"]
+        browser: ["ZORA BOT", "Chrome", "1.0.0"],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000
     });
 
     sock.ev.on("creds.update", saveCreds);
+
+    let pairingRequested = false;
 
     sock.ev.on("connection.update", async update => {
         const { connection, lastDisconnect } = update;
 
         if (connection === "connecting") {
-            console.log("ZORA BOT sedang menghubungkan...");
+            console.log("[ZORA BOT] Menghubungkan ke WhatsApp...");
         }
 
         if (connection === "open") {
-            console.log("ZORA BOT berhasil terhubung!");
+            console.log("[ZORA BOT] BERHASIL TERHUBUNG!");
         }
 
-        if (connection === "close") {
-            const status =
-                lastDisconnect?.error?.output?.statusCode;
+        if (
+            connection === "close" &&
+            lastDisconnect?.error?.output?.statusCode !==
+            DisconnectReason.loggedOut
+        ) {
+            console.log("[ZORA BOT] Koneksi terputus. Mencoba ulang...");
+            await sleep(3000);
+            startBot();
+        }
 
-            if (status !== DisconnectReason.loggedOut) {
-                console.log("Koneksi terputus. Menghubungkan ulang...");
-                await sleep(3000);
-                startBot();
-            } else {
-                console.log("Sesi logout. Hapus sesi hanya jika ingin pairing ulang.");
-            }
+        if (
+            connection === "close" &&
+            lastDisconnect?.error?.output?.statusCode ===
+            DisconnectReason.loggedOut
+        ) {
+            console.log("[ZORA BOT] Sesi logout. Pairing ulang diperlukan.");
         }
     });
 
-    // PAIRING NOMOR TELEPON
-    if (!state.creds.registered) {
+    // PAIRING CODE
+    if (!state.creds.registered && !pairingRequested) {
+        pairingRequested = true;
+
         if (!/^[0-9]{10,15}$/.test(PHONE_NUMBER)) {
-            console.log("Isi PHONE_NUMBER dengan nomor WhatsApp yang benar.");
+            console.log("\n[ERROR] Nomor belum benar!");
+            console.log('Ubah PHONE_NUMBER menjadi contoh "6281234567890"');
             return;
         }
 
+        console.log("\n================================");
+        console.log("          ZORA BOT");
+        console.log("================================");
+        console.log("Meminta pairing code...");
+        console.log("Nomor:", PHONE_NUMBER);
+
         try {
+            await sleep(3000);
+
             const code = await sock.requestPairingCode(
-                PHONE_NUMBER,
-                PAIRING_CODE
+                PHONE_NUMBER
             );
 
             console.log("\n================================");
-            console.log("          ZORA BOT");
+            console.log("       ZORA BOT PAIRING");
             console.log("================================");
-            console.log("Nomor:", PHONE_NUMBER);
-            console.log("Kode pairing:", code);
+            console.log("PAIRING CODE:", code);
             console.log("================================\n");
+            console.log("Buka WhatsApp > Perangkat tertaut");
+            console.log("Pilih Tautkan dengan nomor telepon.");
         } catch (error) {
-            console.error("Gagal meminta kode pairing:", error.message);
+            console.error("\n[PAIRING ERROR]", error.message);
         }
     }
 
@@ -196,12 +193,9 @@ async function startBot() {
                 const args = body.slice(1).trim().split(/\s+/);
                 const command = (args.shift() || "").toLowerCase();
 
-                const quoted = msg.message.extendedTextMessage
-                    ?.contextInfo?.quotedMessage;
-
                 const media =
-                    getMessageContent(msg.message) ||
-                    (quoted ? getMessageContent(quoted) : null);
+                    getMedia(msg.message) ||
+                    getQuotedMedia(msg);
 
                 const reply = text =>
                     sendText(sock, jid, text, msg);
@@ -210,13 +204,14 @@ async function startBot() {
                     case "menu":
                     case "help":
                         await reply(
-`╭━━━〔 ${BOT_NAME} 〕━━━
+`╭━━━〔 ZORA BOT 〕━━━
 ┃
+┃ GENERAL
 ┃ .menu
 ┃ .ping
 ┃ .info
 ┃
-┃ MEDIA
+┃ STICKER
 ┃ .sticker
 ┃ .toimg
 ┃
@@ -225,9 +220,6 @@ async function startBot() {
 ┃ .bass
 ┃ .slow
 ┃ .fast
-┃
-┃ VIDEO
-┃ .stcaudio
 ┃
 ╰━━━━━━━━━━━━━━━━━━`
                         );
@@ -239,38 +231,40 @@ async function startBot() {
 
                     case "info":
                         await reply(
-`BOT: ${BOT_NAME}
+`BOT: ZORA BOT
 VERSION: 1.0.0
 PLATFORM: WhatsApp
-LIBRARY: Baileys
-STATUS: Online`
+STATUS: ONLINE`
                         );
                         break;
 
                     case "sticker":
                     case "s": {
-                        if (!media || !["image", "video"].includes(media.type)) {
+                        if (!media ||
+                            !["image", "video"].includes(media.type)) {
                             await reply("Kirim atau balas gambar/video dengan .sticker");
                             break;
                         }
 
-                        const input = path.join(TEMP_DIR, `${Date.now()}_in`);
-                        const output = path.join(TEMP_DIR, `${Date.now()}.webp`);
+                        const id = Date.now();
+                        const input = path.join(TEMP_DIR, `${id}_input`);
+                        const output = path.join(TEMP_DIR, `${id}.webp`);
 
-                        const buffer = await downloadMedia(
-                            media.message,
-                            media.type
+                        fs.writeFileSync(
+                            input,
+                            await downloadMedia(media.message, media.type)
                         );
 
-                        fs.writeFileSync(input, buffer);
+                        const filters =
+                            "fps=15,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:-1:-1:color=white";
 
-                        const inputArgs = media.type === "video"
-                            ? ["-t", "8", "-vf", "fps=15,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:-1:-1:color=white", "-loop", "0"]
-                            : ["-vf", "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:-1:-1:color=white"];
-
-                        await ffmpeg(input, output, [
-                            ...inputArgs,
-                            "-vcodec", "libwebp"
+                        await runFFmpeg(input, output, [
+                            ...(media.type === "video"
+                                ? ["-t", "8"]
+                                : []),
+                            "-vf", filters,
+                            "-vcodec", "libwebp",
+                            "-loop", "0"
                         ]);
 
                         await sock.sendMessage(jid, {
@@ -288,16 +282,16 @@ STATUS: Online`
                             break;
                         }
 
-                        const input = path.join(TEMP_DIR, `${Date.now()}.webp`);
-                        const output = path.join(TEMP_DIR, `${Date.now()}.png`);
+                        const id = Date.now();
+                        const input = path.join(TEMP_DIR, `${id}.webp`);
+                        const output = path.join(TEMP_DIR, `${id}.png`);
 
-                        const buffer = await downloadMedia(
-                            media.message,
-                            "sticker"
+                        fs.writeFileSync(
+                            input,
+                            await downloadMedia(media.message, "sticker")
                         );
 
-                        fs.writeFileSync(input, buffer);
-                        await ffmpeg(input, output, []);
+                        await runFFmpeg(input, output, []);
 
                         await sock.sendMessage(jid, {
                             image: fs.readFileSync(output),
@@ -309,22 +303,33 @@ STATUS: Online`
                         break;
                     }
 
-                    case "tomp3": {
+                    case "tomp3":
+                    case "bass":
+                    case "slow":
+                    case "fast": {
                         if (!media || media.type !== "audio") {
-                            await reply("Balas pesan audio dengan .tomp3");
+                            await reply("Balas pesan audio dengan ." + command);
                             break;
                         }
 
-                        const input = path.join(TEMP_DIR, `${Date.now()}_in`);
-                        const output = path.join(TEMP_DIR, `${Date.now()}.mp3`);
+                        const id = Date.now();
+                        const input = path.join(TEMP_DIR, `${id}_input`);
+                        const output = path.join(TEMP_DIR, `${id}.mp3`);
 
                         fs.writeFileSync(
                             input,
                             await downloadMedia(media.message, "audio")
                         );
 
-                        await ffmpeg(input, output, [
+                        let filters = [];
+
+                        if (command === "bass") filters = ["-af", "bass=g=10"];
+                        if (command === "slow") filters = ["-af", "atempo=0.8"];
+                        if (command === "fast") filters = ["-af", "atempo=1.25"];
+
+                        await runFFmpeg(input, output, [
                             "-vn",
+                            ...filters,
                             "-acodec", "libmp3lame",
                             "-q:a", "2"
                         ]);
@@ -340,71 +345,24 @@ STATUS: Online`
                         break;
                     }
 
-                    case "bass":
-                    case "slow":
-                    case "fast": {
-                        if (!media || media.type !== "audio") {
-                            await reply("Balas pesan audio dengan ." + command);
-                            break;
-                        }
-
-                        const input = path.join(TEMP_DIR, `${Date.now()}_in`);
-                        const output = path.join(TEMP_DIR, `${Date.now()}.mp3`);
-
-                        fs.writeFileSync(
-                            input,
-                            await downloadMedia(media.message, "audio")
-                        );
-
-                        let filter = "volume=1";
-
-                        if (command === "bass") {
-                            filter = "bass=g=10";
-                        }
-
-                        if (command === "slow") {
-                            filter = "atempo=0.8";
-                        }
-
-                        if (command === "fast") {
-                            filter = "atempo=1.25";
-                        }
-
-                        await ffmpeg(input, output, [
-                            "-vn",
-                            "-af", filter,
-                            "-acodec", "libmp3lame"
-                        ]);
-
-                        await sock.sendMessage(jid, {
-                            audio: fs.readFileSync(output),
-                            mimetype: "audio/mpeg",
-                            fileName: "zora.mp3"
-                        }, { quoted: msg });
-
-                        fs.unlinkSync(input);
-                        fs.unlinkSync(output);
-                        break;
-                    }
-
                     case "stcaudio":
                         await reply(
-                            "Fitur stcaudio belum diaktifkan pada versi ini."
+                            "Fitur stcaudio belum tersedia di versi ini."
                         );
                         break;
 
                     default:
                         await reply(
-                            `Perintah tidak dikenal: ${PREFIX}${command}\nKetik .menu`
+                            `Perintah tidak ditemukan: ${PREFIX}${command}\nKetik .menu`
                         );
                 }
-
             } catch (error) {
-                console.error("Command error:", error);
-                await sock.sendMessage(
+                console.error("[COMMAND ERROR]", error);
+                await sendText(
+                    sock,
                     msg.key.remoteJid,
-                    { text: "Terjadi error saat menjalankan perintah." },
-                    { quoted: msg }
+                    "Terjadi kesalahan saat menjalankan perintah.",
+                    msg
                 ).catch(() => {});
             }
         }
@@ -413,4 +371,6 @@ STATUS: Online`
     return sock;
 }
 
-startBot().catch(console.error);
+startBot().catch(error => {
+    console.error("[FATAL ERROR]", error);
+});
