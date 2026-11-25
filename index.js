@@ -1,681 +1,416 @@
 
-import makeWASocket, {
-  DisconnectReason,
-  useMultiFileAuthState,
-  downloadContentFromMessage
-} from "@whiskeysockets/baileys";
+const {
+    default: makeWASocket,
+    DisconnectReason,
+    useMultiFileAuthState,
+    downloadContentFromMessage
+} = require("@whiskeysockets/baileys");
 
-import pino from "pino";
-import qrcode from "qrcode-terminal";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+const pino = require("pino");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
 
 const exec = promisify(execFile);
 
 const BOT_NAME = "ZORA BOT";
-const VERSION = "1.1.0";
+const PAIRING_CODE = "ZORAXBOT";
+
+// GANTI DENGAN NOMOR WHATSAPP BOT
+// Contoh: 6281234567890
+const PHONE_NUMBER = "628xxxxxxxxxx";
+
 const PREFIX = ".";
-const MAX_DURATION = 30;
+const SESSION_DIR = "./session";
+const TEMP_DIR = "./temp";
 
-const pending = new Map();
-let reconnecting = false;
-
-function unwrap(message) {
-  let m = message || {};
-
-  for (let i = 0; i < 5; i++) {
-    const next =
-      m.ephemeralMessage?.message ||
-      m.viewOnceMessage?.message ||
-      m.viewOnceMessageV2?.message ||
-      m.documentWithCaptionMessage?.message;
-
-    if (!next) break;
-    m = next;
-  }
-
-  return m;
+if (!fs.existsSync(TEMP_DIR)) {
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-function findMedia(message) {
-  const m = unwrap(message);
-
-  const types = [
-    ["imageMessage", "image"],
-    ["videoMessage", "video"],
-    ["audioMessage", "audio"],
-    ["stickerMessage", "sticker"],
-    ["documentMessage", "document"]
-  ];
-
-  for (const [key, type] of types) {
-    const media = m[key];
-
-    if (!media) continue;
-
-    if (
-      type === "document" &&
-      !String(media.mimetype || "").startsWith("audio/")
-    ) continue;
-
-    return { media, type };
-  }
-
-  return null;
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function getMedia(message) {
-  const own = findMedia(message);
-  if (own) return own;
+async function downloadMedia(message, type) {
+    const stream = await downloadContentFromMessage(message, type);
+    let buffer = Buffer.from([]);
 
-  const m = unwrap(message);
-
-  let context = null;
-
-  for (const value of Object.values(m)) {
-    if (value?.contextInfo) {
-      context = value.contextInfo;
-      break;
+    for await (const chunk of stream) {
+        buffer = Buffer.concat([buffer, chunk]);
     }
-  }
 
-  if (context?.quotedMessage) {
-    return findMedia(context.quotedMessage);
-  }
-
-  return null;
+    return buffer;
 }
 
-function getText(message) {
-  const m = unwrap(message);
+function getMessageContent(message) {
+    let msg = message;
 
-  return (
-    m.conversation ||
-    m.extendedTextMessage?.text ||
-    m.imageMessage?.caption ||
-    m.videoMessage?.caption ||
-    m.audioMessage?.caption ||
-    m.documentMessage?.caption ||
-    ""
-  ).trim();
+    while (msg) {
+        if (msg.imageMessage) {
+            return { message: msg.imageMessage, type: "image" };
+        }
+
+        if (msg.videoMessage) {
+            return { message: msg.videoMessage, type: "video" };
+        }
+
+        if (msg.audioMessage) {
+            return { message: msg.audioMessage, type: "audio" };
+        }
+
+        if (msg.stickerMessage) {
+            return { message: msg.stickerMessage, type: "sticker" };
+        }
+
+        if (msg.documentMessage) {
+            return { message: msg.documentMessage, type: "document" };
+        }
+
+        if (msg.ephemeralMessage) {
+            msg = msg.ephemeralMessage.message;
+        } else if (msg.viewOnceMessage) {
+            msg = msg.viewOnceMessage.message;
+        } else if (msg.viewOnceMessageV2) {
+            msg = msg.viewOnceMessageV2.message;
+        } else if (msg.documentWithCaptionMessage) {
+            msg = msg.documentWithCaptionMessage.message;
+        } else {
+            break;
+        }
+    }
+
+    return null;
 }
 
-function extension(media, type) {
-  const mime = (media.mimetype || "").toLowerCase();
+function getQuotedMedia(message) {
+    const context =
+        message.message?.extendedTextMessage?.contextInfo ||
+        message.message?.imageMessage?.contextInfo ||
+        message.message?.videoMessage?.contextInfo ||
+        message.message?.audioMessage?.contextInfo;
 
-  if (type === "image") {
-    if (mime.includes("png")) return "png";
-    if (mime.includes("webp")) return "webp";
-    return "jpg";
-  }
+    if (!context?.quotedMessage) return null;
 
-  if (type === "video") return "mp4";
-  if (type === "sticker") return "webp";
-
-  if (mime.includes("mpeg")) return "mp3";
-  if (mime.includes("ogg")) return "ogg";
-  if (mime.includes("wav")) return "wav";
-
-  return "audio";
+    return getMessageContent(context.quotedMessage);
 }
 
-async function download(media, type, dir, name) {
-  const stream = await downloadContentFromMessage(
-    media,
-    type
-  );
-
-  const chunks = [];
-
-  for await (const chunk of stream) {
-    chunks.push(chunk);
-  }
-
-  const buffer = Buffer.concat(chunks);
-
-  if (!buffer.length) {
-    throw new Error("Media gagal diunduh.");
-  }
-
-  const file = path.join(
-    dir,
-    name + "." + extension(media, type)
-  );
-
-  await fs.writeFile(file, buffer);
-
-  return file;
-}
-
-async function ffmpeg(args) {
-  try {
-    await exec(
-      "ffmpeg",
-      ["-hide_banner", "-loglevel", "error", "-y", ...args],
-      { timeout: 120000 }
-    );
-  } catch (error) {
-    throw new Error(
-      error.stderr?.toString() || "FFmpeg error."
-    );
-  }
-}
-
-async function reply(sock, jid, msg, text) {
-  return sock.sendMessage(
-    jid,
-    { text },
-    { quoted: msg }
-  );
-}
-
-// STICKER MAKER
-
-async function sticker(sock, jid, msg, dir) {
-  const item = getMedia(msg.message);
-
-  if (
-    !item ||
-    !["image", "video"].includes(item.type)
-  ) {
-    throw new Error(
-      "Reply gambar/video dengan .sticker."
-    );
-  }
-
-  const input = await download(
-    item.media,
-    item.type,
-    dir,
-    "input"
-  );
-
-  const output = path.join(dir, "sticker.webp");
-
-  if (item.type === "image") {
-    await ffmpeg([
-      "-i", input,
-      "-frames:v", "1",
-      "-vf",
-      "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba",
-      "-c:v", "libwebp",
-      "-q:v", "75",
-      output
+async function ffmpeg(input, output, args = []) {
+    await exec("ffmpeg", [
+        "-y",
+        "-i", input,
+        ...args,
+        output
     ]);
-  } else {
-    await ffmpeg([
-      "-i", input,
-      "-t", "6",
-      "-vf",
-      "fps=15,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=yuva420p",
-      "-c:v", "libwebp",
-      "-loop", "0",
-      "-an",
-      output
-    ]);
-  }
 
-  await sock.sendMessage(
-    jid,
-    {
-      sticker: await fs.readFile(output),
-      mimetype: "image/webp"
-    },
-    { quoted: msg }
-  );
+    return output;
 }
 
-// STICKER TO IMAGE
-
-async function toimg(sock, jid, msg, dir) {
-  const item = getMedia(msg.message);
-
-  if (!item || item.type !== "sticker") {
-    throw new Error("Reply stiker dengan .toimg.");
-  }
-
-  const input = await download(
-    item.media,
-    item.type,
-    dir,
-    "sticker"
-  );
-
-  const output = path.join(dir, "image.png");
-
-  await ffmpeg([
-    "-i", input,
-    "-frames:v", "1",
-    output
-  ]);
-
-  await sock.sendMessage(
-    jid,
-    {
-      image: await fs.readFile(output),
-      caption: "ZORA BOT"
-    },
-    { quoted: msg }
-  );
+async function sendText(sock, jid, text, quoted) {
+    return sock.sendMessage(jid, { text }, { quoted });
 }
-
-// AUDIO EFFECTS
-
-async function audio(sock, jid, msg, dir, command) {
-  const item = getMedia(msg.message);
-
-  if (!item || item.type !== "audio") {
-    throw new Error(
-      "Reply audio dengan ." + command
-    );
-  }
-
-  const input = await download(
-    item.media,
-    item.type,
-    dir,
-    "audio"
-  );
-
-  const output = path.join(dir, command + ".mp3");
-
-  const filters = {
-    tomp3: null,
-    bass: "bass=g=8",
-    slow: "atempo=0.8",
-    fast: "atempo=1.25"
-  };
-
-  const args = ["-i", input, "-vn"];
-
-  if (filters[command]) {
-    args.push("-af", filters[command]);
-  }
-
-  args.push(
-    "-t", String(MAX_DURATION),
-    "-c:a", "libmp3lame",
-    "-q:a", "4",
-    output
-  );
-
-  await ffmpeg(args);
-
-  await sock.sendMessage(
-    jid,
-    {
-      audio: await fs.readFile(output),
-      mimetype: "audio/mpeg",
-      fileName: command + ".mp3",
-      ptt: false
-    },
-    { quoted: msg }
-  );
-}
-
-// STCAUDIO
-
-async function startStc(sock, jid, msg, dir, key) {
-  const item = getMedia(msg.message);
-
-  if (
-    !item ||
-    !["image", "video"].includes(item.type)
-  ) {
-    throw new Error(
-      "Reply gambar/video dengan .stcaudio."
-    );
-  }
-
-  const input = await download(
-    item.media,
-    item.type,
-    dir,
-    "visual"
-  );
-
-  const old = pending.get(key);
-
-  if (old) {
-    clearTimeout(old.timer);
-
-    await fs.rm(
-      old.dir,
-      { recursive: true, force: true }
-    );
-  }
-
-  const timer = setTimeout(async () => {
-    const current = pending.get(key);
-
-    if (current?.dir === dir) {
-      pending.delete(key);
-
-      await fs.rm(
-        dir,
-        { recursive: true, force: true }
-      );
-    }
-  }, 120000);
-
-  pending.set(key, {
-    dir,
-    input,
-    type: item.type,
-    timer
-  });
-
-  await reply(
-    sock,
-    jid,
-    msg,
-    "Gambar/video diterima!\n\nSekarang kirim audio dalam 2 menit."
-  );
-}
-
-async function finishStc(
-  sock,
-  jid,
-  msg,
-  data,
-  audioItem
-) {
-  const audioFile = await download(
-    audioItem.media,
-    audioItem.type,
-    data.dir,
-    "sound"
-  );
-
-  const output = path.join(
-    data.dir,
-    "ZORA-STCAUDIO.mp4"
-  );
-
-  const args = [];
-
-  if (data.type === "image") {
-    args.push(
-      "-loop", "1",
-      "-i", data.input,
-      "-i", audioFile
-    );
-  } else {
-    args.push(
-      "-i", data.input,
-      "-i", audioFile
-    );
-  }
-
-  args.push(
-    "-map", "0:v:0",
-    "-map", "1:a:0",
-    "-vf",
-    "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-    "-t", String(MAX_DURATION),
-    "-shortest",
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", "28",
-    "-c:a", "aac",
-    "-b:a", "128k",
-    "-movflags", "+faststart",
-    output
-  );
-
-  await ffmpeg(args);
-
-  await sock.sendMessage(
-    jid,
-    {
-      video: await fs.readFile(output),
-      mimetype: "video/mp4",
-      fileName: "ZORA-STCAUDIO.mp4",
-      caption: "ZORA STCAUDIO"
-    },
-    { quoted: msg }
-  );
-}
-
-// MESSAGE HANDLER
-
-async function handleMessage(sock, msg) {
-  if (!msg.message || msg.key.fromMe) return;
-
-  const jid = msg.key.remoteJid;
-
-  if (
-    !jid ||
-    jid === "status@broadcast" ||
-    jid.endsWith("@newsletter")
-  ) return;
-
-  const sender = msg.key.participant || jid;
-  const key = jid + ":" + sender;
-
-  const ownMedia = findMedia(msg.message);
-  const waiting = pending.get(key);
-
-  // Terima audio setelah perintah stcaudio
-
-  if (waiting && ownMedia?.type === "audio") {
-    try {
-      await reply(
-        sock,
-        jid,
-        msg,
-        "Audio diterima. Membuat video..."
-      );
-
-      await finishStc(
-        sock,
-        jid,
-        msg,
-        waiting,
-        ownMedia
-      );
-    } catch (error) {
-      await reply(
-        sock,
-        jid,
-        msg,
-        "STCAUDIO gagal: " + error.message
-      );
-    } finally {
-      clearTimeout(waiting.timer);
-      pending.delete(key);
-
-      await fs.rm(
-        waiting.dir,
-        { recursive: true, force: true }
-      );
-    }
-
-    return;
-  }
-
-  const text = getText(msg.message);
-
-  if (!text.startsWith(PREFIX)) return;
-
-  const parts = text.split(/\s+/);
-
-  const command = parts
-    .shift()
-    .slice(PREFIX.length)
-    .toLowerCase();
-
-  const dir = await fs.mkdtemp(
-    path.join(os.tmpdir(), "zora-")
-  );
-
-  try {
-    switch (command) {
-      case "menu":
-      case "help":
-        await reply(sock, jid, msg, [
-          "╭━━━「 ZORA BOT 」",
-          "┃ Version: " + VERSION,
-          "┃",
-          "┣━━ STICKER",
-          "┃ .sticker",
-          "┃ .toimg",
-          "┃",
-          "┣━━ AUDIO",
-          "┃ .tomp3",
-          "┃ .bass",
-          "┃ .slow",
-          "┃ .fast",
-          "┃",
-          "┣━━ SPECIAL",
-          "┃ .stcaudio",
-          "┃",
-          "┣━━ GENERAL",
-          "┃ .ping",
-          "┃ .info",
-          "┃",
-          "╰━━ BY ZORA"
-        ].join("\n"));
-        break;
-
-      case "ping":
-        await reply(
-          sock, jid, msg,
-          "Pong! ZORA BOT aktif."
-        );
-        break;
-
-      case "info":
-        await reply(
-          sock, jid, msg,
-          "ZORA BOT\nVersion: " + VERSION +
-          "\nStatus: Online\nNode.js + FFmpeg"
-        );
-        break;
-
-      case "sticker":
-      case "s":
-        await sticker(sock, jid, msg, dir);
-        break;
-
-      case "toimg":
-        await toimg(sock, jid, msg, dir);
-        break;
-
-      case "tomp3":
-      case "bass":
-      case "slow":
-      case "fast":
-        await audio(sock, jid, msg, dir, command);
-        break;
-
-      case "stcaudio":
-        await startStc(
-          sock, jid, msg, dir, key
-        );
-        break;
-
-      default:
-        await reply(
-          sock, jid, msg,
-          "Command tidak ditemukan. Ketik .menu"
-        );
-    }
-  } catch (error) {
-    console.error(error);
-
-    await reply(
-      sock, jid, msg,
-      "Error: " + error.message
-    );
-  } finally {
-    if (pending.get(key)?.dir !== dir) {
-      await fs.rm(
-        dir,
-        { recursive: true, force: true }
-      );
-    }
-  }
-}
-
-// START BOT
 
 async function startBot() {
-  const { state, saveCreds } =
-    await useMultiFileAuthState("./session");
+    const { state, saveCreds } =
+        await useMultiFileAuthState(SESSION_DIR);
 
-  const sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: "silent" }),
-    browser: ["ZORA BOT", "Chrome", VERSION],
-    markOnlineOnConnect: false,
-    syncFullHistory: false
-  });
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false,
+        logger: pino({ level: "silent" }),
+        browser: ["ZORA BOT", "Chrome", "1.0.0"]
+    });
 
-  sock.ev.on("creds.update", saveCreds);
+    sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", update => {
-    const {
-      connection,
-      lastDisconnect,
-      qr
-    } = update;
+    sock.ev.on("connection.update", async update => {
+        const { connection, lastDisconnect } = update;
 
-    if (qr) {
-      console.log("\nSCAN QR ZORA BOT:\n");
+        if (connection === "connecting") {
+            console.log("ZORA BOT sedang menghubungkan...");
+        }
 
-      qrcode.generate(qr, {
-        small: true
-      });
+        if (connection === "open") {
+            console.log("ZORA BOT berhasil terhubung!");
+        }
+
+        if (connection === "close") {
+            const status =
+                lastDisconnect?.error?.output?.statusCode;
+
+            if (status !== DisconnectReason.loggedOut) {
+                console.log("Koneksi terputus. Menghubungkan ulang...");
+                await sleep(3000);
+                startBot();
+            } else {
+                console.log("Sesi logout. Hapus sesi hanya jika ingin pairing ulang.");
+            }
+        }
+    });
+
+    // PAIRING NOMOR TELEPON
+    if (!state.creds.registered) {
+        if (!/^[0-9]{10,15}$/.test(PHONE_NUMBER)) {
+            console.log("Isi PHONE_NUMBER dengan nomor WhatsApp yang benar.");
+            return;
+        }
+
+        try {
+            const code = await sock.requestPairingCode(
+                PHONE_NUMBER,
+                PAIRING_CODE
+            );
+
+            console.log("\n================================");
+            console.log("          ZORA BOT");
+            console.log("================================");
+            console.log("Nomor:", PHONE_NUMBER);
+            console.log("Kode pairing:", code);
+            console.log("================================\n");
+        } catch (error) {
+            console.error("Gagal meminta kode pairing:", error.message);
+        }
     }
 
-    if (connection === "open") {
-      reconnecting = false;
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        if (type !== "notify") return;
 
-      console.log(
-        "\nZORA BOT ONLINE - VERSION " + VERSION
-      );
-    }
+        for (const msg of messages) {
+            try {
+                if (!msg.message || msg.key.fromMe) continue;
 
-    if (connection === "close") {
-      const code =
-        lastDisconnect?.error?.output?.statusCode;
+                const jid = msg.key.remoteJid;
+                if (!jid || jid === "status@broadcast") continue;
 
-      if (
-        code !== DisconnectReason.loggedOut &&
-        !reconnecting
-      ) {
-        reconnecting = true;
+                const body =
+                    msg.message.conversation ||
+                    msg.message.extendedTextMessage?.text ||
+                    msg.message.imageMessage?.caption ||
+                    msg.message.videoMessage?.caption ||
+                    "";
 
-        setTimeout(() => {
-          reconnecting = false;
-          startBot().catch(console.error);
-        }, 3000);
-      } else {
-        console.log(
-          "WhatsApp logout. Pairing ulang diperlukan."
-        );
-      }
-    }
-  });
+                if (!body.startsWith(PREFIX)) continue;
 
-  sock.ev.on(
-    "messages.upsert",
-    async ({ messages, type }) => {
-      if (type !== "notify") return;
+                const args = body.slice(1).trim().split(/\s+/);
+                const command = (args.shift() || "").toLowerCase();
 
-      for (const msg of messages) {
-        await handleMessage(sock, msg)
-          .catch(console.error);
-      }
-    }
-  );
+                const quoted = msg.message.extendedTextMessage
+                    ?.contextInfo?.quotedMessage;
+
+                const media =
+                    getMessageContent(msg.message) ||
+                    (quoted ? getMessageContent(quoted) : null);
+
+                const reply = text =>
+                    sendText(sock, jid, text, msg);
+
+                switch (command) {
+                    case "menu":
+                    case "help":
+                        await reply(
+`╭━━━〔 ${BOT_NAME} 〕━━━
+┃
+┃ .menu
+┃ .ping
+┃ .info
+┃
+┃ MEDIA
+┃ .sticker
+┃ .toimg
+┃
+┃ AUDIO
+┃ .tomp3
+┃ .bass
+┃ .slow
+┃ .fast
+┃
+┃ VIDEO
+┃ .stcaudio
+┃
+╰━━━━━━━━━━━━━━━━━━`
+                        );
+                        break;
+
+                    case "ping":
+                        await reply("Pong! ZORA BOT aktif.");
+                        break;
+
+                    case "info":
+                        await reply(
+`BOT: ${BOT_NAME}
+VERSION: 1.0.0
+PLATFORM: WhatsApp
+LIBRARY: Baileys
+STATUS: Online`
+                        );
+                        break;
+
+                    case "sticker":
+                    case "s": {
+                        if (!media || !["image", "video"].includes(media.type)) {
+                            await reply("Kirim atau balas gambar/video dengan .sticker");
+                            break;
+                        }
+
+                        const input = path.join(TEMP_DIR, `${Date.now()}_in`);
+                        const output = path.join(TEMP_DIR, `${Date.now()}.webp`);
+
+                        const buffer = await downloadMedia(
+                            media.message,
+                            media.type
+                        );
+
+                        fs.writeFileSync(input, buffer);
+
+                        const inputArgs = media.type === "video"
+                            ? ["-t", "8", "-vf", "fps=15,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:-1:-1:color=white", "-loop", "0"]
+                            : ["-vf", "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:-1:-1:color=white"];
+
+                        await ffmpeg(input, output, [
+                            ...inputArgs,
+                            "-vcodec", "libwebp"
+                        ]);
+
+                        await sock.sendMessage(jid, {
+                            sticker: fs.readFileSync(output)
+                        }, { quoted: msg });
+
+                        fs.unlinkSync(input);
+                        fs.unlinkSync(output);
+                        break;
+                    }
+
+                    case "toimg": {
+                        if (!media || media.type !== "sticker") {
+                            await reply("Balas sticker dengan .toimg");
+                            break;
+                        }
+
+                        const input = path.join(TEMP_DIR, `${Date.now()}.webp`);
+                        const output = path.join(TEMP_DIR, `${Date.now()}.png`);
+
+                        const buffer = await downloadMedia(
+                            media.message,
+                            "sticker"
+                        );
+
+                        fs.writeFileSync(input, buffer);
+                        await ffmpeg(input, output, []);
+
+                        await sock.sendMessage(jid, {
+                            image: fs.readFileSync(output),
+                            caption: "ZORA BOT"
+                        }, { quoted: msg });
+
+                        fs.unlinkSync(input);
+                        fs.unlinkSync(output);
+                        break;
+                    }
+
+                    case "tomp3": {
+                        if (!media || media.type !== "audio") {
+                            await reply("Balas pesan audio dengan .tomp3");
+                            break;
+                        }
+
+                        const input = path.join(TEMP_DIR, `${Date.now()}_in`);
+                        const output = path.join(TEMP_DIR, `${Date.now()}.mp3`);
+
+                        fs.writeFileSync(
+                            input,
+                            await downloadMedia(media.message, "audio")
+                        );
+
+                        await ffmpeg(input, output, [
+                            "-vn",
+                            "-acodec", "libmp3lame",
+                            "-q:a", "2"
+                        ]);
+
+                        await sock.sendMessage(jid, {
+                            audio: fs.readFileSync(output),
+                            mimetype: "audio/mpeg",
+                            fileName: "zora.mp3"
+                        }, { quoted: msg });
+
+                        fs.unlinkSync(input);
+                        fs.unlinkSync(output);
+                        break;
+                    }
+
+                    case "bass":
+                    case "slow":
+                    case "fast": {
+                        if (!media || media.type !== "audio") {
+                            await reply("Balas pesan audio dengan ." + command);
+                            break;
+                        }
+
+                        const input = path.join(TEMP_DIR, `${Date.now()}_in`);
+                        const output = path.join(TEMP_DIR, `${Date.now()}.mp3`);
+
+                        fs.writeFileSync(
+                            input,
+                            await downloadMedia(media.message, "audio")
+                        );
+
+                        let filter = "volume=1";
+
+                        if (command === "bass") {
+                            filter = "bass=g=10";
+                        }
+
+                        if (command === "slow") {
+                            filter = "atempo=0.8";
+                        }
+
+                        if (command === "fast") {
+                            filter = "atempo=1.25";
+                        }
+
+                        await ffmpeg(input, output, [
+                            "-vn",
+                            "-af", filter,
+                            "-acodec", "libmp3lame"
+                        ]);
+
+                        await sock.sendMessage(jid, {
+                            audio: fs.readFileSync(output),
+                            mimetype: "audio/mpeg",
+                            fileName: "zora.mp3"
+                        }, { quoted: msg });
+
+                        fs.unlinkSync(input);
+                        fs.unlinkSync(output);
+                        break;
+                    }
+
+                    case "stcaudio":
+                        await reply(
+                            "Fitur stcaudio belum diaktifkan pada versi ini."
+                        );
+                        break;
+
+                    default:
+                        await reply(
+                            `Perintah tidak dikenal: ${PREFIX}${command}\nKetik .menu`
+                        );
+                }
+
+            } catch (error) {
+                console.error("Command error:", error);
+                await sock.sendMessage(
+                    msg.key.remoteJid,
+                    { text: "Terjadi error saat menjalankan perintah." },
+                    { quoted: msg }
+                ).catch(() => {});
+            }
+        }
+    });
+
+    return sock;
 }
-
-process.on("uncaughtException", console.error);
-process.on("unhandledRejection", console.error);
 
 startBot().catch(console.error);
