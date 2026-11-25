@@ -1,8 +1,8 @@
 
 {
-  "name": "zora-bot-md",
+  "name": "zora-bot",
   "version": "1.0.0",
-  "description": "ZORA WhatsApp Bot MD",
+  "description": "ZORA BOT WhatsApp Automation",
   "type": "module",
   "main": "index.js",
   "scripts": {
