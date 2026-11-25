@@ -109,7 +109,87 @@ async function startBot() {
 
     sock.ev.on("creds.update", saveCreds);
 
-    let pairingStarted = false;
+    // PAIRING CODE
+    if (!state.creds.registered) {
+        console.log("\n================================");
+        console.log("          ZORA BOT");
+        console.log("================================");
+
+        const phone = (
+            await ask("Masukkan nomor WhatsApp (628xxx): ")
+        ).replace(/\D/g, "");
+
+        if (!/^[0-9]{10,15}$/.test(phone)) {
+            console.log("Nomor tidak valid. Gunakan format 628xxx.");
+            rl.close();
+            return;
+        }
+
+        try {
+            console.log("\nMenyiapkan koneksi WhatsApp...");
+
+            // Tunggu socket siap sebelum meminta pairing.
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    cleanup();
+                    reject(new Error("Koneksi timeout."));
+                }, 30000);
+
+                const onUpdate = update => {
+                    if (update.connection === "open") {
+                        cleanup();
+                        resolve();
+                    }
+
+                    if (update.connection === "close") {
+                        cleanup();
+                        reject(new Error("Koneksi tertutup."));
+                    }
+                };
+
+                function cleanup() {
+                    clearTimeout(timeout);
+                    sock.ev.off("connection.update", onUpdate);
+                }
+
+                sock.ev.on("connection.update", onUpdate);
+
+                // Beri kesempatan event koneksi berjalan.
+                if (sock.ws?.isOpen) {
+                    cleanup();
+                    resolve();
+                }
+            }).catch(async error => {
+                if (error.message === "Koneksi tertutup.") {
+                    throw error;
+                }
+                throw error;
+            });
+
+        } catch (error) {
+            console.log("[KONEKSI]", error.message);
+        }
+
+        // Jika socket belum terbuka, request pairing bisa gagal.
+        try {
+            const code = await sock.requestPairingCode(phone);
+
+            console.log("\n================================");
+            console.log("       ZORA BOT PAIRING");
+            console.log("================================");
+            console.log("NOMOR:", phone);
+            console.log("KODE PAIRING:", code);
+            console.log("================================");
+            console.log("WhatsApp > Perangkat tertaut");
+            console.log("> Tautkan dengan nomor telepon");
+            console.log("================================\n");
+
+        } catch (error) {
+            console.log("[PAIRING ERROR]", error.message);
+        }
+
+        rl.close();
+    }
 
     sock.ev.on("connection.update", async update => {
         const { connection, lastDisconnect } = update;
@@ -130,8 +210,8 @@ async function startBot() {
             console.log("[ZORA BOT] Koneksi terputus:", status);
 
             if (status !== DisconnectReason.loggedOut) {
-                console.log("[ZORA BOT] Mencoba koneksi ulang...");
-                await sleep(3000);
+                console.log("[ZORA BOT] Menghubungkan ulang...");
+                await sleep(5000);
                 startBot();
             } else {
                 console.log("[ZORA BOT] Sesi logout. Pairing ulang diperlukan.");
@@ -139,47 +219,7 @@ async function startBot() {
         }
     });
 
-    // PAIRING NOMOR TELEPON
-    if (!state.creds.registered && !pairingStarted) {
-        pairingStarted = true;
-
-        console.log("\n================================");
-        console.log("          ZORA BOT");
-        console.log("================================");
-
-        let phone = await ask("Masukkan nomor WhatsApp (628xxx): ");
-
-        phone = phone.replace(/[^0-9]/g, "");
-
-        if (!/^[0-9]{10,15}$/.test(phone)) {
-            console.log("Nomor tidak valid. Gunakan format 628xxx.");
-            rl.close();
-            return;
-        }
-
-        try {
-            console.log("\nMeminta kode pairing...");
-
-            await sleep(3000);
-
-            const code = await sock.requestPairingCode(phone);
-
-            console.log("\n================================");
-            console.log("       ZORA BOT PAIRING");
-            console.log("================================");
-            console.log("NOMOR:", phone);
-            console.log("KODE:", code);
-            console.log("================================");
-            console.log("Masukkan kode melalui WhatsApp");
-            console.log("Perangkat tertaut > Tautkan dengan nomor telepon\n");
-
-        } catch (error) {
-            console.log("PAIRING ERROR:", error.message);
-        }
-
-        rl.close();
-    }
-
+    // COMMAND HANDLER
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
         if (type !== "notify") return;
 
@@ -210,7 +250,7 @@ async function startBot() {
                     case "menu":
                     case "help":
                         await reply(sock, jid,
-`╭━━━〔 ZORA BOT 〕━━━
+`╭━━━〔 ${BOT_NAME} 〕━━━
 ┃
 ┃ GENERAL
 ┃ .menu
@@ -231,12 +271,13 @@ async function startBot() {
                         break;
 
                     case "ping":
-                        await reply(sock, jid, "Pong! ZORA BOT aktif.", msg);
+                        await reply(sock, jid,
+                            "Pong! ZORA BOT aktif.", msg);
                         break;
 
                     case "info":
                         await reply(sock, jid,
-`BOT: ZORA BOT
+`BOT: ${BOT_NAME}
 VERSION: 1.0.0
 PLATFORM: WhatsApp
 STATUS: ONLINE`, msg);
@@ -244,8 +285,10 @@ STATUS: ONLINE`, msg);
 
                     case "sticker":
                     case "s": {
-                        if (!media || !["image", "video"].includes(media.type)) {
-                            await reply(sock, jid, "Kirim atau balas gambar/video dengan .sticker", msg);
+                        if (!media ||
+                            !["image", "video"].includes(media.type)) {
+                            await reply(sock, jid,
+                                "Kirim atau balas gambar/video dengan .sticker", msg);
                             break;
                         }
 
@@ -277,7 +320,8 @@ STATUS: ONLINE`, msg);
 
                     case "toimg": {
                         if (!media || media.type !== "sticker") {
-                            await reply(sock, jid, "Balas sticker dengan .toimg", msg);
+                            await reply(sock, jid,
+                                "Balas sticker dengan .toimg", msg);
                             break;
                         }
 
@@ -292,7 +336,7 @@ STATUS: ONLINE`, msg);
 
                         await sock.sendMessage(jid, {
                             image: fs.readFileSync(output),
-                            caption: "ZORA BOT"
+                            caption: BOT_NAME
                         }, { quoted: msg });
 
                         fs.unlinkSync(input);
@@ -305,7 +349,8 @@ STATUS: ONLINE`, msg);
                     case "slow":
                     case "fast": {
                         if (!media || media.type !== "audio") {
-                            await reply(sock, jid, "Balas audio dengan ." + command, msg);
+                            await reply(sock, jid,
+                                "Balas audio dengan ." + command, msg);
                             break;
                         }
 
@@ -318,9 +363,14 @@ STATUS: ONLINE`, msg);
 
                         let filters = [];
 
-                        if (command === "bass") filters = ["-af", "bass=g=10"];
-                        if (command === "slow") filters = ["-af", "atempo=0.8"];
-                        if (command === "fast") filters = ["-af", "atempo=1.25"];
+                        if (command === "bass")
+                            filters = ["-af", "bass=g=10"];
+
+                        if (command === "slow")
+                            filters = ["-af", "atempo=0.8"];
+
+                        if (command === "fast")
+                            filters = ["-af", "atempo=1.25"];
 
                         await ffmpeg(input, output, [
                             "-vn", ...filters,
@@ -351,6 +401,7 @@ STATUS: ONLINE`, msg);
 
             } catch (error) {
                 console.error("[COMMAND ERROR]", error);
+
                 await reply(sock, msg.key.remoteJid,
                     "Terjadi kesalahan saat menjalankan perintah.", msg)
                     .catch(() => {});
@@ -362,5 +413,5 @@ STATUS: ONLINE`, msg);
 }
 
 startBot().catch(error => {
-    console.error("[FATAL]", error);
+    console.error("[FATAL ERROR]", error);
 });
