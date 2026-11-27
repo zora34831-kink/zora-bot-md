@@ -226,13 +226,15 @@ async function startBot() {
             console.log("\nMenunggu socket WhatsApp siap...");
             // Tunggu WebSocket benar-benar terbuka; jangan menebak dengan jeda tetap.
             await sock.waitForSocketOpen();
-            console.log("[ZORA BOT] Socket siap. Meminta pairing code...");
+            console.log("[PAIRING DIAG] Socket terbuka; memulai requestPairingCode...");
+            const requestStartedAt = Date.now();
             const code = await sock.requestPairingCode(phone);
+            console.log("[PAIRING DIAG] requestPairingCode BERHASIL dalam",
+                Date.now() - requestStartedAt, "ms.");
 
             console.log("\n================================");
             console.log("       ZORA BOT PAIRING");
             console.log("================================");
-            console.log("NOMOR:", phone);
             console.log("PAIRING CODE:", code);
             console.log("================================");
             console.log("Buka WhatsApp");
@@ -241,8 +243,12 @@ async function startBot() {
             console.log("================================\n");
 
         } catch (error) {
-            console.error("\n[PAIRING ERROR]", error?.message || error);
-            if (error?.output) console.error("[PAIRING ERROR DETAIL]", error.output);
+            console.error("\n[PAIRING DIAG] request/menunggu socket GAGAL.");
+            console.error("[PAIRING DIAG] name:", error?.name);
+            console.error("[PAIRING DIAG] message:", error?.message || String(error));
+            console.error("[PAIRING DIAG] statusCode:",
+                error?.output?.statusCode || error?.data?.statusCode || "tidak tersedia");
+            console.error("[PAIRING DIAG] data:", error?.output?.payload || error?.data || "tidak tersedia");
             if (error?.stack) console.error(error.stack);
 
             pairingRequested = false;
