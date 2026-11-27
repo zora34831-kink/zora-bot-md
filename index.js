@@ -20,7 +20,6 @@ const VERSION = "1.2.0";
 const PREFIX = ".";
 const SESSION = "./session";
 const TEMP = "./temp";
-const CUSTOM_PAIRING_CODE = "ZORAXBOT";
 
 if (!fs.existsSync(TEMP)) {
     fs.mkdirSync(TEMP, { recursive: true });
@@ -156,26 +155,21 @@ async function startBot() {
                 );
             }
 
-            console.log("\nMenghubungkan ke WhatsApp...");
+            console.log("\nMenunggu koneksi WhatsApp siap...");
 
-            // Tunggu socket mulai terhubung.
-            await sleep(3000);
-
-            let code;
-
-            try {
-                // Coba kode custom 8 karakter.
-                code = await sock.requestPairingCode(
-                    phone,
-                    CUSTOM_PAIRING_CODE
-                );
-            } catch (customError) {
-                console.log(
-                    "Kode custom tidak diterima. Meminta kode otomatis..."
-                );
-
-                code = await sock.requestPairingCode(phone);
+            // Tunggu WebSocket Baileys benar-benar terbuka sebelum meminta pairing code.
+            let attempts = 0;
+            while (!sock.ws?.isOpen && attempts < 60) {
+                await sleep(500);
+                attempts++;
             }
+
+            if (!sock.ws?.isOpen) {
+                throw new Error("Koneksi WhatsApp belum terbuka setelah 30 detik. Coba jalankan ulang.");
+            }
+
+            console.log("[ZORA BOT] Koneksi siap, meminta pairing code...");
+            const code = await sock.requestPairingCode(phone);
 
             console.log("\n================================");
             console.log("       ZORA BOT PAIRING");
