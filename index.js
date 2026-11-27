@@ -3,7 +3,8 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    downloadContentFromMessage
+    downloadContentFromMessage,
+    fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
@@ -120,7 +121,15 @@ async function startBot() {
     const { state, saveCreds } =
         await useMultiFileAuthState(SESSION);
 
+    // Ambil versi WhatsApp Web yang sesuai dengan library Baileys terpasang.
+    const { version: waVersion, isLatest } =
+        await fetchLatestBaileysVersion();
+
+    console.log("[ZORA BOT] WhatsApp Web version:", waVersion.join("."),
+        "| latest:", isLatest);
+
     const sock = makeWASocket({
+        version: waVersion,
         auth: state,
         logger: pino({ level: "debug" }),
         connectTimeoutMs: 60000,
