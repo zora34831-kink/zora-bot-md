@@ -315,17 +315,24 @@ async function startBot() {
 ┃ .menu
 ┃ .ping
 ┃ .info
+┃ .waktu
+┃ .runtime
 ┃
-┃ STICKER
-┃ .sticker
+┃ MEDIA
+┃ .sticker / .s
 ┃ .stcaudio
 ┃ .toimg
-┃
-┃ AUDIO
 ┃ .tomp3
-┃ .bass
-┃ .slow
-┃ .fast
+┃ .bass / .slow / .fast
+┃
+┃ GROUP (BOT HARUS ADMIN)
+┃ .groupinfo
+┃ .linkgroup
+┃ .tagall [teks]
+┃ .hidetag [teks]
+┃ .kick @tag
+┃ .promote @tag
+┃ .demote @tag
 ┃
 ╰━━━━━━━━━━━━━━━━━━`,
                         msg);
@@ -550,6 +557,111 @@ STATUS: ONLINE`,
 
                         fs.unlinkSync(input);
                         fs.unlinkSync(output);
+                        break;
+                    }
+
+                    // WAKTU
+                    case "waktu": {
+                        const now = new Date();
+                        const waktu = new Intl.DateTimeFormat("id-ID", {
+                            dateStyle: "full",
+                            timeStyle: "long",
+                            timeZone: "Asia/Jakarta"
+                        }).format(now);
+                        await reply(sock, jid, "Waktu WIB: " + waktu, msg);
+                        break;
+                    }
+
+                    // UPTIME
+                    case "runtime": {
+                        const seconds = Math.floor(process.uptime());
+                        const jam = Math.floor(seconds / 3600);
+                        const menit = Math.floor((seconds % 3600) / 60);
+                        const detik = seconds % 60;
+                        await reply(sock, jid, `ZORA BOT aktif selama ${jam} jam ${menit} menit ${detik} detik.`, msg);
+                        break;
+                    }
+
+                    // GROUP INFO
+                    case "groupinfo": {
+                        if (!jid.endsWith("@g.us")) {
+                            await reply(sock, jid, "Perintah ini hanya bisa digunakan di grup.", msg);
+                            break;
+                        }
+                        const metadata = await sock.groupMetadata(jid);
+                        const admins = metadata.participants.filter(p => p.admin).length;
+                        await reply(sock, jid,
+                            `NAMA: ${metadata.subject}
+ANGGOTA: ${metadata.participants.length}
+ADMIN: ${admins}
+ID: ${jid}`, msg);
+                        break;
+                    }
+
+                    // GROUP INVITE LINK
+                    case "linkgroup": {
+                        if (!jid.endsWith("@g.us")) {
+                            await reply(sock, jid, "Perintah ini hanya bisa digunakan di grup.", msg);
+                            break;
+                        }
+                        const metadata = await sock.groupMetadata(jid);
+                        const botNumber = jidNumber(sock.user?.id);
+                        const botMember = metadata.participants.find(p => jidNumber(p.id) === botNumber);
+                        if (!botMember?.admin) {
+                            await reply(sock, jid, "Bot harus menjadi admin untuk mengambil link grup.", msg);
+                            break;
+                        }
+                        const code = await sock.groupInviteCode(jid);
+                        await reply(sock, jid, "Link grup: https://chat.whatsapp.com/" + code, msg);
+                        break;
+                    }
+
+                    // TAG ALL
+                    case "tagall":
+                    case "hidetag": {
+                        if (!jid.endsWith("@g.us")) {
+                            await reply(sock, jid, "Perintah ini hanya bisa digunakan di grup.", msg);
+                            break;
+                        }
+                        const metadata = await sock.groupMetadata(jid);
+                        const mentions = metadata.participants.map(p => p.id);
+                        const text = args.join(" ") || "Perhatian semua anggota grup.";
+                        await sock.sendMessage(jid, {
+                            text: (command === "tagall" ? "「 TAG ALL 」\\n" : "") + text,
+                            mentions
+                        }, { quoted: msg });
+                        break;
+                    }
+
+                    // KICK / PROMOTE / DEMOTE
+                    case "kick":
+                    case "promote":
+                    case "demote": {
+                        if (!jid.endsWith("@g.us")) {
+                            await reply(sock, jid, "Perintah ini hanya bisa digunakan di grup.", msg);
+                            break;
+                        }
+                        const metadata = await sock.groupMetadata(jid);
+                        const botNumber = jidNumber(sock.user?.id);
+                        const botMember = metadata.participants.find(p => jidNumber(p.id) === botNumber);
+                        if (!botMember?.admin) {
+                            await reply(sock, jid, "Bot harus menjadi admin grup untuk menjalankan perintah ini.", msg);
+                            break;
+                        }
+                        const context = msg.message.extendedTextMessage?.contextInfo;
+                        const mentioned = context?.mentionedJid || [];
+                        const target = mentioned[0] || context?.participant;
+                        if (!target) {
+                            await reply(sock, jid, "Tag atau balas pesan anggota yang dituju.", msg);
+                            break;
+                        }
+                        if (jidNumber(target) === botNumber) {
+                            await reply(sock, jid, "Bot tidak bisa menargetkan dirinya sendiri.", msg);
+                            break;
+                        }
+                        const action = command === "kick" ? "remove" : command;
+                        await sock.groupParticipantsUpdate(jid, [target], action);
+                        await reply(sock, jid, "Berhasil menjalankan perintah " + command + ".", msg);
                         break;
                     }
 
