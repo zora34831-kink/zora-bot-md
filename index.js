@@ -214,10 +214,10 @@ async function startBot() {
                 );
             }
 
-            console.log("\nMenunggu socket WhatsApp tersambung...");
-            // Listener connection.update sudah aktif sebelum pairing diminta.
-            await sleep(3000);
-            console.log("[ZORA BOT] Meminta pairing code...");
+            console.log("\nMenunggu socket WhatsApp siap...");
+            // Tunggu WebSocket benar-benar terbuka; jangan menebak dengan jeda tetap.
+            await sock.waitForSocketOpen();
+            console.log("[ZORA BOT] Socket siap. Meminta pairing code...");
             const code = await sock.requestPairingCode(phone);
 
             console.log("\n================================");
