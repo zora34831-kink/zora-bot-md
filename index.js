@@ -42,6 +42,12 @@ const sleep = ms =>
 
 let reconnecting = false;
 let pairingRequested = false;
+let ownerJid = null;
+
+function jidNumber(jid) {
+    if (!jid || typeof jid !== "string") return "";
+    return jid.split("@")[0].split(":")[0].replace(/\\D/g, "");
+}
 
 async function downloadMedia(message, type) {
     const stream = await downloadContentFromMessage(message, type);
@@ -208,6 +214,7 @@ async function startBot() {
 
         if (connection === "open") {
             reconnecting = false;
+            ownerJid = sock.user?.id || state.creds.me?.id || ownerJid;
 
             console.log("\n================================");
             console.log("       ZORA BOT ONLINE");
@@ -257,11 +264,21 @@ async function startBot() {
 
         for (const msg of messages) {
             try {
-                if (!msg.message || msg.key.fromMe) continue;
+                if (!msg.message) continue;
 
                 const jid = msg.key.remoteJid;
 
                 if (!jid || jid === "status@broadcast") {
+                    continue;
+                }
+
+                // Mode pribadi: hanya akun WhatsApp yang menautkan bot boleh memakai perintah.
+                const senderJid = msg.key.fromMe
+                    ? ownerJid
+                    : (msg.key.participant || jid);
+                const ownerNumber = jidNumber(ownerJid);
+                const senderNumber = jidNumber(senderJid);
+                if (!ownerNumber || !senderNumber || senderNumber !== ownerNumber) {
                     continue;
                 }
 
@@ -301,6 +318,7 @@ async function startBot() {
 ┃
 ┃ STICKER
 ┃ .sticker
+┃ .stcaudio
 ┃ .toimg
 ┃
 ┃ AUDIO
@@ -387,6 +405,40 @@ STATUS: ONLINE`,
 
                         fs.unlinkSync(input);
                         fs.unlinkSync(output);
+                        break;
+                    }
+
+                    // VIDEO DENGAN AUDIO: output MP4 bergaya sticker, bukan sticker WebP native.
+                    case "stcaudio": {
+                        if (!media || media.type !== "video") {
+                            await reply(sock, jid,
+                                "Balas video yang memiliki suara dengan .stcaudio. Hasilnya berupa video MP4 bergaya sticker, karena sticker WhatsApp asli tidak mendukung audio.",
+                                msg
+                            );
+                            break;
+                        }
+
+                        const id = Date.now();
+                        const input = path.join(TEMP, `${id}_input.mp4`);
+                        const output = path.join(TEMP, `${id}_stcaudio.mp4`);
+                        try {
+                            fs.writeFileSync(input, await downloadMedia(media.message, "video"));
+                            await ffmpeg(input, output, [
+                                "-t", "15",
+                                "-vf", "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black,fps=24",
+                                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                                "-c:a", "aac", "-b:a", "96k",
+                                "-movflags", "+faststart"
+                            ]);
+                            await sock.sendMessage(jid, {
+                                video: fs.readFileSync(output),
+                                mimetype: "video/mp4",
+                                caption: "ZORA BOT • Video dengan audio"
+                            }, { quoted: msg });
+                        } finally {
+                            if (fs.existsSync(input)) fs.unlinkSync(input);
+                            if (fs.existsSync(output)) fs.unlinkSync(output);
+                        }
                         break;
                     }
 
@@ -500,16 +552,6 @@ STATUS: ONLINE`,
                         fs.unlinkSync(output);
                         break;
                     }
-
-                    // STCAUDIO
-                    case "stcaudio":
-                        await reply(
-                            sock,
-                            jid,
-                            "Fitur stcaudio belum tersedia.",
-                            msg
-                        );
-                        break;
 
                     // UNKNOWN COMMAND
                     default:
