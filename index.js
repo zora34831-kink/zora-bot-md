@@ -4,7 +4,8 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     downloadContentFromMessage,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    Browsers
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
@@ -135,7 +136,8 @@ async function startBot() {
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 25000,
-        browser: ["ZORA BOT", "Chrome", VERSION],
+        // Gunakan identitas browser standar untuk proses penautan perangkat.
+        browser: Browsers.ubuntu("Chrome"),
         printQRInTerminal: false,
         markOnlineOnConnect: false,
         syncFullHistory: false
@@ -223,10 +225,7 @@ async function startBot() {
                 );
             }
 
-            console.log("\nMenunggu socket WhatsApp siap...");
-            // Tunggu WebSocket benar-benar terbuka; jangan menebak dengan jeda tetap.
-            await sock.waitForSocketOpen();
-            console.log("[PAIRING DIAG] Socket terbuka; memulai requestPairingCode...");
+            console.log("\n[PAIRING DIAG] Meminta pairing code dengan alur standar Baileys...");
             const requestStartedAt = Date.now();
             const code = await sock.requestPairingCode(phone);
             console.log("[PAIRING DIAG] requestPairingCode BERHASIL dalam",
