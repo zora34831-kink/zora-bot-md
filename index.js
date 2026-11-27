@@ -45,7 +45,7 @@ let ownerJid = null;
 
 function jidNumber(jid) {
     if (!jid || typeof jid !== "string") return "";
-    return jid.split("@")[0].split(":")[0].replace(/\\D/g, "");
+    return jid.split("@")[0].split(":")[0].replace(/\D/g, "");
 }
 
 async function downloadMedia(message, type) {
@@ -122,7 +122,10 @@ async function startBot() {
 
     const sock = makeWASocket({
         auth: state,
-        logger: pino({ level: "silent" }),
+        logger: pino({ level: "debug" }),
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000,
         browser: ["ZORA BOT", "Chrome", VERSION],
         printQRInTerminal: false,
         markOnlineOnConnect: false,
@@ -130,67 +133,6 @@ async function startBot() {
     });
 
     sock.ev.on("creds.update", saveCreds);
-
-    // ====================================
-    // PAIRING LOGIN - NO QR
-    // ====================================
-
-    if (!state.creds.registered && !pairingRequested) {
-        pairingRequested = true;
-
-        try {
-            console.log("\n================================");
-            console.log("          ZORA BOT");
-            console.log("================================");
-
-            let phone = await ask(
-                "Masukkan nomor WhatsApp (628xxx): "
-            );
-
-            phone = phone.replace(/\D/g, "");
-
-            if (!/^[0-9]{10,15}$/.test(phone)) {
-                throw new Error(
-                    "Nomor tidak valid. Gunakan format 628xxx."
-                );
-            }
-
-            console.log("\nMenunggu koneksi WhatsApp siap...");
-
-            // Tunggu WebSocket Baileys benar-benar terbuka sebelum meminta pairing code.
-            let attempts = 0;
-            while (!sock.ws?.isOpen && attempts < 60) {
-                await sleep(500);
-                attempts++;
-            }
-
-            if (!sock.ws?.isOpen) {
-                throw new Error("Koneksi WhatsApp belum terbuka setelah 30 detik. Coba jalankan ulang.");
-            }
-
-            console.log("[ZORA BOT] Koneksi siap, meminta pairing code...");
-            const code = await sock.requestPairingCode(phone);
-
-            console.log("\n================================");
-            console.log("       ZORA BOT PAIRING");
-            console.log("================================");
-            console.log("NOMOR:", phone);
-            console.log("PAIRING CODE:", code);
-            console.log("================================");
-            console.log("Buka WhatsApp");
-            console.log("Perangkat tertaut");
-            console.log("Tautkan dengan nomor telepon");
-            console.log("================================\n");
-
-        } catch (error) {
-            console.error(
-                "\n[PAIRING ERROR]",
-                error.message
-            );
-
-            pairingRequested = false;
-        }
-    }
 
     // ====================================
     // CONNECTION UPDATE - NO QR HANDLER
@@ -219,13 +161,12 @@ async function startBot() {
         }
 
         if (connection === "close") {
-            const status =
-                lastDisconnect?.error?.output?.statusCode;
-
-            console.log(
-                "[ZORA BOT] Koneksi terputus:",
-                status
-            );
+            const status = lastDisconnect?.error?.output?.statusCode;
+            console.error("[ZORA BOT] Koneksi terputus:", {
+                statusCode: status,
+                message: lastDisconnect?.error?.message,
+                data: lastDisconnect?.error?.data
+            });
 
             if (status === DisconnectReason.loggedOut) {
                 console.log(
@@ -248,6 +189,57 @@ async function startBot() {
             }
         }
     });
+
+    // ====================================
+    // PAIRING LOGIN - NO QR
+    // ====================================
+
+    if (!state.creds.registered && !pairingRequested) {
+        pairingRequested = true;
+
+        try {
+            console.log("\n================================");
+            console.log("          ZORA BOT");
+            console.log("================================");
+
+            let phone = await ask(
+                "Masukkan nomor WhatsApp (628xxx): "
+            );
+
+            phone = phone.replace(/\D/g, "");
+
+            if (!/^[0-9]{10,15}$/.test(phone)) {
+                throw new Error(
+                    "Nomor tidak valid. Gunakan format 628xxx."
+                );
+            }
+
+            console.log("\nMenunggu socket WhatsApp tersambung...");
+            // Listener connection.update sudah aktif sebelum pairing diminta.
+            await sleep(3000);
+            console.log("[ZORA BOT] Meminta pairing code...");
+            const code = await sock.requestPairingCode(phone);
+
+            console.log("\n================================");
+            console.log("       ZORA BOT PAIRING");
+            console.log("================================");
+            console.log("NOMOR:", phone);
+            console.log("PAIRING CODE:", code);
+            console.log("================================");
+            console.log("Buka WhatsApp");
+            console.log("Perangkat tertaut");
+            console.log("Tautkan dengan nomor telepon");
+            console.log("================================\n");
+
+        } catch (error) {
+            console.error("\n[PAIRING ERROR]", error?.message || error);
+            if (error?.output) console.error("[PAIRING ERROR DETAIL]", error.output);
+            if (error?.stack) console.error(error.stack);
+
+            pairingRequested = false;
+        }
+    }
+
 
     // ====================================
     // MESSAGE HANDLER
